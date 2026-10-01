@@ -38,11 +38,32 @@ __host__ __device__ glm::vec3 calculateRandomDirectionInHemisphere(
  * This method applies its changes to the Ray parameter `ray` in place.
  * It also modifies the color `color` of the ray in place.
  *
- * You may need to change the parameter list for your purposes!
+ * `outside` says whether the ray hit the surface from outside the primitive,
+ * which picks the side of a refractive interface. Also records the pdf of the
+ * sampled direction in `lastPdf` (0 for mirrors and glass).
  */
 __host__ __device__ void scatterRay(
     PathSegment& pathSegment,
     glm::vec3 intersect,
     glm::vec3 normal,
+    bool outside,
     const Material& m,
     thrust::default_random_engine& rng);
+
+/**
+ * True for materials that scatter into a single direction (mirror, glass).
+ * Light sampling cannot hit that direction, so they get no direct lighting.
+ */
+__host__ __device__ bool isDeltaMaterial(const Material& m);
+
+/**
+ * BSDF value f(wo, wi) for a non-delta material, and the solid-angle pdf with
+ * which scatterRay would pick wi. `normal` faces wo; wo and wi point away
+ * from the surface.
+ */
+__host__ __device__ glm::vec3 evalBsdf(
+    const Material& m,
+    glm::vec3 normal,
+    glm::vec3 wo,
+    glm::vec3 wi,
+    float& pdf);

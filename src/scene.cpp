@@ -56,8 +56,19 @@ void Scene::loadFromJSON(const std::string& jsonName)
         }
         else if (p["TYPE"] == "Specular")
         {
+            // RGB is the reflectance at normal incidence. ROUGHNESS 0 is a mirror.
             const auto& col = p["RGB"];
             newMaterial.color = glm::vec3(col[0], col[1], col[2]);
+            newMaterial.hasReflective = 1.0f;
+            newMaterial.roughness = p.value("ROUGHNESS", 0.0f);
+        }
+        else if (p["TYPE"] == "Refractive")
+        {
+            // Smooth dielectric such as glass or water. RGB tints transmitted light.
+            const auto& col = p["RGB"];
+            newMaterial.color = glm::vec3(col[0], col[1], col[2]);
+            newMaterial.hasRefractive = 1.0f;
+            newMaterial.indexOfRefraction = p.value("IOR", 1.5f);
         }
         MatNameToID[name] = materials.size();
         materials.emplace_back(newMaterial);
@@ -82,6 +93,13 @@ void Scene::loadFromJSON(const std::string& jsonName)
         newGeom.translation = glm::vec3(trans[0], trans[1], trans[2]);
         newGeom.rotation = glm::vec3(rotat[0], rotat[1], rotat[2]);
         newGeom.scale = glm::vec3(scale[0], scale[1], scale[2]);
+        // Optional: the object slides by MOTION while the shutter is open
+        newGeom.motion = glm::vec3(0.0f);
+        if (p.contains("MOTION"))
+        {
+            const auto& motion = p["MOTION"];
+            newGeom.motion = glm::vec3(motion[0], motion[1], motion[2]);
+        }
         newGeom.transform = utilityCore::buildTransformationMatrix(
             newGeom.translation, newGeom.rotation, newGeom.scale);
         newGeom.inverseTransform = glm::inverse(newGeom.transform);
@@ -104,6 +122,10 @@ void Scene::loadFromJSON(const std::string& jsonName)
     camera.position = glm::vec3(pos[0], pos[1], pos[2]);
     camera.lookAt = glm::vec3(lookat[0], lookat[1], lookat[2]);
     camera.up = glm::vec3(up[0], up[1], up[2]);
+
+    // Optional thin lens depth of field. Focuses on the look-at point by default.
+    camera.lensRadius = cameraData.value("LENS_RADIUS", 0.0f);
+    camera.focalDistance = cameraData.value("FOCAL_DISTANCE", glm::length(camera.lookAt - camera.position));
 
     //calculate fov based on resolution
     float yscaled = tan(fovy * (PI / 180));

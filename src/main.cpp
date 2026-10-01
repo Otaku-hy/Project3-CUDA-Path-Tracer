@@ -216,6 +216,7 @@ bool init()
         return false;
     }
     glfwMakeContextCurrent(window);
+    glfwSwapInterval(0); // don't let vsync cap the iteration rate
     glfwSetKeyCallback(window, keyCallback);
     glfwSetCursorPosCallback(window, mousePositionCallback);
     glfwSetMouseButtonCallback(window, mouseButtonCallback);
@@ -286,6 +287,31 @@ void RenderImGui()
     //ImGui::Text("counter = %d", counter);
     ImGui::Text("Traced Depth %d", imguiData->TracedDepth);
     ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / ImGui::GetIO().Framerate, ImGui::GetIO().Framerate);
+    ImGui::Text("Path tracing average %.3f ms/iteration", imguiData->AvgIterationMs);
+
+    ImGui::Separator();
+    bool settingsChanged = false;
+    settingsChanged |= ImGui::Checkbox("Sort paths by material", &imguiData->SortByMaterial);
+    settingsChanged |= ImGui::Checkbox("Stream compaction", &imguiData->StreamCompaction);
+    settingsChanged |= ImGui::Checkbox("Stochastic antialiasing", &imguiData->Antialiasing);
+    settingsChanged |= ImGui::Combo("Light sampling", &imguiData->Integrator, "BSDF only\0NEE\0NEE + MIS\0");
+    settingsChanged |= ImGui::Checkbox("Russian roulette", &imguiData->RussianRoulette);
+    settingsChanged |= ImGui::Checkbox("Motion blur", &imguiData->MotionBlur);
+
+    Camera& cam = renderState->camera;
+    settingsChanged |= ImGui::SliderFloat("Lens radius", &cam.lensRadius, 0.0f, 1.0f);
+    settingsChanged |= ImGui::SliderFloat("Focal distance", &cam.focalDistance, 0.1f, 30.0f);
+    if (settingsChanged)
+    {
+        camchanged = true; // restart accumulation with the new settings
+    }
+
+    ImGui::Separator();
+    ImGui::Text("Live paths per bounce:");
+    for (size_t i = 0; i < imguiData->LivePathsPerDepth.size(); i++)
+    {
+        ImGui::Text("  bounce %zu: %d", i + 1, imguiData->LivePathsPerDepth[i]);
+    }
     ImGui::End();
 
 
@@ -344,7 +370,8 @@ int main(int argc, char** argv)
 
     if (argc < 2)
     {
-        printf("Usage: %s SCENEFILE.json\n", argv[0]);
+        printf("Usage: %s SCENEFILE.json [--sort] [--no-compact] [--no-aa] [--no-dof] [--no-rr]"
+            " [--no-motion-blur] [--integrator naive|nee|mis] [--iterations N]\n", argv[0]);
         return 1;
     }
 
@@ -356,6 +383,66 @@ int main(int argc, char** argv)
     //Create Instance for ImGUIData
     guiData = new GuiDataContainer();
 
+    // Optional flags to set the render toggles from the command line (for benchmarking)
+    for (int i = 2; i < argc; i++)
+    {
+        std::string arg = argv[i];
+        if (arg == "--sort")
+        {
+            guiData->SortByMaterial = true;
+        }
+        else if (arg == "--no-compact")
+        {
+            guiData->StreamCompaction = false;
+        }
+        else if (arg == "--no-aa")
+        {
+            guiData->Antialiasing = false;
+        }
+        else if (arg == "--no-dof")
+        {
+            scene->state.camera.lensRadius = 0.0f;
+        }
+        else if (arg == "--no-rr")
+        {
+            guiData->RussianRoulette = false;
+        }
+        else if (arg == "--no-motion-blur")
+        {
+            guiData->MotionBlur = false;
+        }
+        else if (arg == "--integrator" && i + 1 < argc)
+        {
+            std::string mode = argv[++i];
+            if (mode == "naive")
+            {
+                guiData->Integrator = INTEGRATOR_NAIVE;
+            }
+            else if (mode == "nee")
+            {
+                guiData->Integrator = INTEGRATOR_NEE;
+            }
+            else if (mode == "mis")
+            {
+                guiData->Integrator = INTEGRATOR_MIS;
+            }
+            else
+            {
+                printf("Unknown integrator: %s (expected naive, nee or mis)\n", mode.c_str());
+                return 1;
+            }
+        }
+        else if (arg == "--iterations" && i + 1 < argc)
+        {
+            scene->state.iterations = std::atoi(argv[++i]);
+        }
+        else
+        {
+            printf("Unknown argument: %s\n", arg.c_str());
+            return 1;
+        }
+    }
+
     // Set up camera stuff from loaded path tracer settings
     iteration = 0;
     renderState = &scene->state;
@@ -363,19 +450,14 @@ int main(int argc, char** argv)
     width = cam.resolution.x;
     height = cam.resolution.y;
 
-    glm::vec3 view = cam.view;
-    glm::vec3 up = cam.up;
-    glm::vec3 right = glm::cross(view, up);
-    up = glm::cross(right, view);
-
     cameraPosition = cam.position;
 
-    // compute phi (horizontal) and theta (vertical) relative 3D axis
-    // so, (0 0 1) is forward, (0 1 0) is up
-    glm::vec3 viewXZ = glm::vec3(view.x, 0.0f, view.z);
-    glm::vec3 viewZY = glm::vec3(0.0f, view.y, view.z);
-    phi = glm::acos(glm::dot(glm::normalize(viewXZ), glm::vec3(0, 0, -1)));
-    theta = glm::acos(glm::dot(glm::normalize(viewZY), glm::vec3(0, 1, 0)));
+    // Orbit angles of the eye around the look-at point, matching runCuda:
+    // theta is measured from +y, phi around y starting at +z. Using the eye
+    // offset keeps cameras that look up or down, or along -x, the right way round.
+    glm::vec3 eyeOffset = glm::normalize(cam.position - cam.lookAt);
+    theta = glm::acos(glm::clamp(eyeOffset.y, -1.0f, 1.0f));
+    phi = glm::atan(eyeOffset.x, eyeOffset.z);
     ogLookAt = cam.lookAt;
     zoom = glm::length(cam.position - ogLookAt);
 
@@ -431,7 +513,8 @@ void runCuda()
         cam.view = -glm::normalize(cameraPosition);
         glm::vec3 v = cam.view;
         glm::vec3 u = glm::vec3(0, 1, 0);//glm::normalize(cam.up);
-        glm::vec3 r = glm::cross(v, u);
+        // Unit length, so tilting the camera does not shrink the field of view
+        glm::vec3 r = glm::normalize(glm::cross(v, u));
         cam.up = glm::cross(r, v);
         cam.right = r;
 
@@ -465,6 +548,21 @@ void runCuda()
     }
     else
     {
+        static const char* integratorNames[] = { "naive", "nee", "mis" };
+        printf("Settings: sort=%d compaction=%d antialiasing=%d integrator=%s russian_roulette=%d motion_blur=%d"
+            " lens_radius=%g focal_distance=%g\n",
+            guiData->SortByMaterial, guiData->StreamCompaction, guiData->Antialiasing,
+            integratorNames[guiData->Integrator], guiData->RussianRoulette, guiData->MotionBlur,
+            renderState->camera.lensRadius, renderState->camera.focalDistance);
+        printf("Average path tracing time: %.3f ms/iteration over %d iterations\n",
+            guiData->AvgIterationMs, iteration);
+        printf("Live paths per bounce (last iteration):");
+        for (int n : guiData->LivePathsPerDepth)
+        {
+            printf(" %d", n);
+        }
+        printf("\n");
+
         saveImage();
         pathtraceFree();
         cudaDeviceReset();

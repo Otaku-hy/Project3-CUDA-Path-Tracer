@@ -71,3 +71,26 @@ __host__ __device__ float sphereIntersectionTest(
     glm::vec3& intersectionPoint,
     glm::vec3& normal,
     bool& outside);
+
+/**
+ * Test intersection with any primitive at shutter time `time` in [0, 1).
+ * A moving primitive is translated by time * motion. Shifting the ray the
+ * other way finds the same hit without rebuilding the transform matrices,
+ * and leaves the distance and the normal unchanged.
+ */
+__host__ __device__ inline float geomIntersectionTest(
+    const Geom& geom,
+    Ray r,
+    float time,
+    glm::vec3& intersectionPoint,
+    glm::vec3& normal,
+    bool& outside)
+{
+    glm::vec3 offset = geom.motion * time;
+    r.origin -= offset;
+    float t = geom.type == CUBE
+        ? boxIntersectionTest(geom, r, intersectionPoint, normal, outside)
+        : sphereIntersectionTest(geom, r, intersectionPoint, normal, outside);
+    intersectionPoint += offset;
+    return t;
+}

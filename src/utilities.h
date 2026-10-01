@@ -15,11 +15,31 @@
 #define SQRT_OF_ONE_THIRD 0.5773502691896257645091487805019574556476f
 #define EPSILON           0.00001f
 
+// How paths gather light (GuiDataContainer::Integrator)
+enum IntegratorMode
+{
+    INTEGRATOR_NAIVE = 0, // BSDF sampling only: a path picks up light only when it hits an emitter
+    INTEGRATOR_NEE = 1,   // next event estimation: sample a light at every non-specular bounce
+    INTEGRATOR_MIS = 2    // NEE and BSDF sampling combined with the power heuristic
+};
+
 class GuiDataContainer
 {
 public:
     GuiDataContainer() : TracedDepth(0) {}
     int TracedDepth;
+
+    // Render toggles. Changing any of them restarts accumulation.
+    bool SortByMaterial = false;
+    bool StreamCompaction = true;
+    bool Antialiasing = true;
+    int Integrator = INTEGRATOR_MIS;
+    bool RussianRoulette = true;
+    bool MotionBlur = true;
+
+    // Stats from the path tracer
+    float AvgIterationMs = 0.0f;       // CUDA-event time per iteration, averaged since the last restart
+    std::vector<int> LivePathsPerDepth; // live paths entering each bounce of the latest iteration
 };
 
 namespace utilityCore

@@ -28,6 +28,7 @@ struct Geom
     glm::vec3 translation;
     glm::vec3 rotation;
     glm::vec3 scale;
+    glm::vec3 motion; // translation over the shutter interval, for motion blur
     glm::mat4 transform;
     glm::mat4 inverseTransform;
     glm::mat4 invTranspose;
@@ -45,6 +46,7 @@ struct Material
     float hasRefractive;
     float indexOfRefraction;
     float emittance;
+    float roughness; // reflective only: 0 is a perfect mirror, larger values give a GGX glossy lobe
 };
 
 struct Camera
@@ -57,6 +59,8 @@ struct Camera
     glm::vec3 right;
     glm::vec2 fov;
     glm::vec2 pixelLength;
+    float lensRadius;    // thin lens aperture radius, 0 for a pinhole camera
+    float focalDistance; // distance along the view direction to the plane in focus
 };
 
 struct RenderState
@@ -71,7 +75,9 @@ struct RenderState
 struct PathSegment
 {
     Ray ray;
-    glm::vec3 color;
+    glm::vec3 color; // throughput
+    float lastPdf;   // solid-angle pdf of the BSDF sample that made `ray`; 0 for camera rays and delta BSDFs
+    float time;      // shutter time in [0, 1), shared by every bounce of the path
     int pixelIndex;
     int remainingBounces;
 };
@@ -84,4 +90,6 @@ struct ShadeableIntersection
   float t;
   glm::vec3 surfaceNormal;
   int materialId;
+  int geomId;   // primitive that was hit, needed for light pdfs
+  bool outside; // the ray hit the primitive from outside (entering a dielectric)
 };
